@@ -1,0 +1,2931 @@
+openapi: 3.1.0
+info:
+  title: gridcalc API
+  version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
+  description:
+    'Full target API of gridcalc. Operations marked `x-status: implemented` are live; `x-status: pending`
+    operations are registered and return 501 NOT_IMPLEMENTED with the backlog ticket (`x-ticket`). Every response
+    uses the envelope `{ data, error, meta? }`.'
+servers:
+  - url: http://127.0.0.1:4107
+    description: Local development
+security:
+  - sessionCookie: []
+tags:
+  - name: Health
+  - name: Auth
+  - name: Formulas
+  - name: Workbooks
+  - name: Sheets
+  - name: Cells
+  - name: Structure
+  - name: Formatting
+  - name: Sort and filter
+  - name: Named ranges
+  - name: Editing
+  - name: Tracing
+  - name: Pivots
+  - name: Charts
+  - name: Import and export
+  - name: Collaboration
+  - name: Comments
+  - name: Versions
+  - name: Sharing
+  - name: Administration
+  - name: Operations
+paths:
+  /api/v1/health/live:
+    get:
+      tags:
+        - Health
+      summary: Liveness probe
+      operationId: getLiveness
+      x-status: implemented
+      security: []
+      responses:
+        '200':
+          description: Process is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        const: ok
+                      version:
+                        type: string
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+  /api/v1/health/ready:
+    get:
+      tags:
+        - Health
+      summary: Readiness probe (database reachable and migrated)
+      operationId: getReadiness
+      x-status: implemented
+      security: []
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status:
+                        const: ready
+                      database:
+                        const: ok
+                      migrations:
+                        type: integer
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '503':
+          description: Database unreachable or not migrated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/v1/auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Register an organization and its owner; starts a session
+      operationId: register
+      x-status: implemented
+      security: []
+      description:
+        Exempt from CSRF (no session yet) but the Origin header must match APP_ORIGIN. Rate limited per
+        client IP (REGISTER_RATE_LIMIT_MAX). An already-registered email yields the generic REGISTRATION_REJECTED
+        error so the response does not confirm account existence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Registered; sets gc_session (HttpOnly) and gc_csrf cookies
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Session'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+        '400':
+          description: VALIDATION_FAILED or REGISTRATION_REJECTED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Cross-origin request rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          description: RATE_LIMITED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/v1/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Sign in with email and password
+      operationId: login
+      x-status: implemented
+      security: []
+      description:
+        Throttled per normalized client IP, per distinct emails per IP, and per email with progressive
+        backoff. Attempts are reserved before password verification. 429 responses carry Retry-After.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Signed in; sets cookies
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Session'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          description: Invalid email or password (generic)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: No organization membership or cross-origin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          description: RATE_LIMITED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/v1/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Revoke the current session
+      operationId: logout
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Signed out; cookies cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      signedOut:
+                        const: true
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/auth/me:
+    get:
+      tags:
+        - Auth
+      summary: Current session, role, permissions and CSRF token
+      operationId: getSession
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Session
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Session'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /api/v1/formulas/functions:
+    get:
+      tags:
+        - Formulas
+      summary: Built-in function catalog
+      operationId: listFunctions
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Functions sorted by name; meta.count
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FunctionInfo'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /api/v1/formulas/parse:
+    post:
+      tags:
+        - Formulas
+      summary: Syntax-check a formula and return its canonical form, AST and references
+      operationId: parseFormula
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - formula
+              properties:
+                formula:
+                  type: string
+                  maxLength: 8192
+                  examples:
+                    - =SUM(A1:B2)*2
+      responses:
+        '200':
+          description: Parse result
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ParseResult'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /api/v1/workbooks:
+    get:
+      tags:
+        - Workbooks
+      summary: List workbooks of the organization
+      operationId: listWorkbooks
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Workbooks ordered by updatedAt desc; meta has total, limit, offset
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workbook'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags:
+        - Workbooks
+      summary: Create a workbook with a default sheet "Sheet1"
+      operationId: createWorkbook
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+      responses:
+        '201':
+          description: Created at revision 1
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    $ref: '#/components/schemas/WorkbookDetail'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/workbooks/{workbookId}:
+    get:
+      tags:
+        - Workbooks
+      summary: Workbook with its sheets
+      operationId: getWorkbook
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+      responses:
+        '200':
+          description: Workbook
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    $ref: '#/components/schemas/WorkbookDetail'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+        - Workbooks
+      summary: Renaming a workbook
+      operationId: renamingAWorkbook
+      x-status: pending
+      x-ticket: GC-043
+      description:
+        Planned (backlog GC-043). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-043.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+    delete:
+      tags:
+        - Workbooks
+      summary: Deleting a workbook
+      operationId: deletingAWorkbook
+      x-status: pending
+      x-ticket: GC-043
+      description:
+        Planned (backlog GC-043). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-043.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/workbooks/{workbookId}/sheets:
+    post:
+      tags:
+        - Sheets
+      summary: Add a sheet; formulas that referenced its name are rebound and recalculated
+      operationId: createSheet
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: 'Cannot contain \ / ? * [ ] : or quotes; unique per workbook (case-insensitive)'
+      responses:
+        '201':
+          description: Sheet added; new revision and recalculated cells
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/CommitResult'
+                      - type: object
+                        properties:
+                          sheet:
+                            $ref: '#/components/schemas/Sheet'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 'CONFLICT: a sheet with that name exists'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/cells:
+    get:
+      tags:
+        - Cells
+      summary: Read non-empty cells of a sheet, optionally within an A1 range window
+      operationId: listCells
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - name: range
+          in: query
+          schema:
+            type: string
+            examples:
+              - A1:Z200
+          description: A1 range; windows are limited to 250,000 cells. Omitted = whole sheet.
+      responses:
+        '200':
+          description: Cells in row-major order; meta has revision and count
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Cell'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/workbooks/{workbookId}/cells:
+    patch:
+      tags:
+        - Cells
+      summary: Apply a batch of cell edits and recalculate incrementally
+      operationId: patchCells
+      x-status: implemented
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      description:
+        'Optimistic concurrency: baseRevision must equal the workbook revision, otherwise 409 REVISION_CONFLICT
+        with details.currentRevision. The response lists edited cells plus every recalculated cell whose value changed.
+        An empty raw string clears a cell.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchCellsRequest'
+      responses:
+        '200':
+          description: Committed
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - error
+                properties:
+                  data:
+                    $ref: '#/components/schemas/CommitResult'
+                  error:
+                    type: 'null'
+                  meta:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: REVISION_CONFLICT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '413':
+          description: 'PAYLOAD_TOO_LARGE: body too large or workbook cell limit exceeded'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+  /api/v1/workbooks/{workbookId}/duplicate:
+    post:
+      tags:
+        - Workbooks
+      summary: Duplicating a workbook
+      operationId: duplicatingAWorkbook
+      x-status: pending
+      x-ticket: GC-043
+      description:
+        Planned (backlog GC-043). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-043.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}:
+    patch:
+      tags:
+        - Sheets
+      summary: Renaming or reordering a sheet
+      operationId: renamingOrReorderingASheet
+      x-status: pending
+      x-ticket: GC-044
+      description:
+        Planned (backlog GC-044). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-044.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+    delete:
+      tags:
+        - Sheets
+      summary: Deleting a sheet
+      operationId: deletingASheet
+      x-status: pending
+      x-ticket: GC-044
+      description:
+        Planned (backlog GC-044). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-044.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/rows/insert:
+    post:
+      tags:
+        - Structure
+      summary: Inserting rows
+      operationId: insertingRows
+      x-status: pending
+      x-ticket: GC-060
+      description:
+        Planned (backlog GC-060). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-060.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/rows/delete:
+    post:
+      tags:
+        - Structure
+      summary: Deleting rows
+      operationId: deletingRows
+      x-status: pending
+      x-ticket: GC-060
+      description:
+        Planned (backlog GC-060). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-060.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/columns/insert:
+    post:
+      tags:
+        - Structure
+      summary: Inserting columns
+      operationId: insertingColumns
+      x-status: pending
+      x-ticket: GC-061
+      description:
+        Planned (backlog GC-061). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-061.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/columns/delete:
+    post:
+      tags:
+        - Structure
+      summary: Deleting columns
+      operationId: deletingColumns
+      x-status: pending
+      x-ticket: GC-061
+      description:
+        Planned (backlog GC-061). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-061.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/move-range:
+    post:
+      tags:
+        - Structure
+      summary: Moving a range
+      operationId: movingARange
+      x-status: pending
+      x-ticket: GC-062
+      description:
+        Planned (backlog GC-062). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-062.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/dimensions:
+    put:
+      tags:
+        - Structure
+      summary: Column widths and row heights
+      operationId: columnWidthsAndRowHeights
+      x-status: pending
+      x-ticket: GC-053
+      description:
+        Planned (backlog GC-053). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-053.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/formats:
+    get:
+      tags:
+        - Formatting
+      summary: Reading cell formats
+      operationId: readingCellFormats
+      x-status: pending
+      x-ticket: GC-064
+      description:
+        Planned (backlog GC-064). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-064.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+    put:
+      tags:
+        - Formatting
+      summary: Applying cell formats
+      operationId: applyingCellFormats
+      x-status: pending
+      x-ticket: GC-064
+      description:
+        Planned (backlog GC-064). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-064.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/conditional-formats:
+    get:
+      tags:
+        - Formatting
+      summary: Listing conditional formats
+      operationId: listingConditionalFormats
+      x-status: pending
+      x-ticket: GC-066
+      description:
+        Planned (backlog GC-066). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-066.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+    post:
+      tags:
+        - Formatting
+      summary: Creating a conditional format
+      operationId: creatingAConditionalFormat
+      x-status: pending
+      x-ticket: GC-066
+      description:
+        Planned (backlog GC-066). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-066.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/validations:
+    get:
+      tags:
+        - Formatting
+      summary: Listing data validation rules
+      operationId: listingDataValidationRules
+      x-status: pending
+      x-ticket: GC-067
+      description:
+        Planned (backlog GC-067). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-067.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+    post:
+      tags:
+        - Formatting
+      summary: Creating a data validation rule
+      operationId: creatingADataValidationRule
+      x-status: pending
+      x-ticket: GC-067
+      description:
+        Planned (backlog GC-067). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-067.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/merges:
+    post:
+      tags:
+        - Formatting
+      summary: Merging cells
+      operationId: mergingCells
+      x-status: pending
+      x-ticket: GC-068
+      description:
+        Planned (backlog GC-068). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-068.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/sort:
+    post:
+      tags:
+        - Sort and filter
+      summary: Sorting a range
+      operationId: sortingARange
+      x-status: pending
+      x-ticket: GC-074
+      description:
+        Planned (backlog GC-074). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-074.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/filter:
+    get:
+      tags:
+        - Sort and filter
+      summary: Reading the sheet filter
+      operationId: readingTheSheetFilter
+      x-status: pending
+      x-ticket: GC-075
+      description:
+        Planned (backlog GC-075). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-075.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+    put:
+      tags:
+        - Sort and filter
+      summary: Setting the sheet filter
+      operationId: settingTheSheetFilter
+      x-status: pending
+      x-ticket: GC-075
+      description:
+        Planned (backlog GC-075). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-075.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/named-ranges:
+    get:
+      tags:
+        - Named ranges
+      summary: Listing named ranges
+      operationId: listingNamedRanges
+      x-status: pending
+      x-ticket: GC-028
+      description:
+        Planned (backlog GC-028). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-028.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+    post:
+      tags:
+        - Named ranges
+      summary: Defining a named range
+      operationId: definingANamedRange
+      x-status: pending
+      x-ticket: GC-028
+      description:
+        Planned (backlog GC-028). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-028.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/named-ranges/{nameId}:
+    patch:
+      tags:
+        - Named ranges
+      summary: Updating a named range
+      operationId: updatingANamedRange
+      x-status: pending
+      x-ticket: GC-028
+      description:
+        Planned (backlog GC-028). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-028.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: nameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+    delete:
+      tags:
+        - Named ranges
+      summary: Deleting a named range
+      operationId: deletingANamedRange
+      x-status: pending
+      x-ticket: GC-028
+      description:
+        Planned (backlog GC-028). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-028.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: nameId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/workbooks/{workbookId}/paste:
+    post:
+      tags:
+        - Editing
+      summary: Paste with reference adjustment
+      operationId: pasteWithReferenceAdjustment
+      x-status: pending
+      x-ticket: GC-071
+      description:
+        Planned (backlog GC-071). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-071.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/fill:
+    post:
+      tags:
+        - Editing
+      summary: Autofill
+      operationId: autofill
+      x-status: pending
+      x-ticket: GC-073
+      description:
+        Planned (backlog GC-073). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-073.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/undo:
+    post:
+      tags:
+        - Editing
+      summary: Undo
+      operationId: undo
+      x-status: pending
+      x-ticket: GC-070
+      description:
+        Planned (backlog GC-070). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-070.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/redo:
+    post:
+      tags:
+        - Editing
+      summary: Redo
+      operationId: redo
+      x-status: pending
+      x-ticket: GC-070
+      description:
+        Planned (backlog GC-070). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-070.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/find-replace:
+    post:
+      tags:
+        - Editing
+      summary: Find and replace
+      operationId: findAndReplace
+      x-status: pending
+      x-ticket: GC-057
+      description:
+        Planned (backlog GC-057). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-057.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/cells/{row}/{col}/precedents:
+    get:
+      tags:
+        - Tracing
+      summary: Tracing precedents
+      operationId: tracingPrecedents
+      x-status: pending
+      x-ticket: GC-049
+      description:
+        Planned (backlog GC-049). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-049.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - name: row
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: col
+          in: path
+          required: true
+          schema:
+            type: integer
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/cells/{row}/{col}/dependents:
+    get:
+      tags:
+        - Tracing
+      summary: Tracing dependents
+      operationId: tracingDependents
+      x-status: pending
+      x-ticket: GC-049
+      description:
+        Planned (backlog GC-049). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-049.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - name: row
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: col
+          in: path
+          required: true
+          schema:
+            type: integer
+  /api/v1/workbooks/{workbookId}/sheets/{sheetId}/cells/{row}/{col}/history:
+    get:
+      tags:
+        - Versions
+      summary: Cell edit history
+      operationId: cellEditHistory
+      x-status: pending
+      x-ticket: GC-096
+      description:
+        Planned (backlog GC-096). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-096.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/SheetId'
+        - name: row
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: col
+          in: path
+          required: true
+          schema:
+            type: integer
+  /api/v1/workbooks/{workbookId}/pivots:
+    get:
+      tags:
+        - Pivots
+      summary: Listing pivot tables
+      operationId: listingPivotTables
+      x-status: pending
+      x-ticket: GC-077
+      description:
+        Planned (backlog GC-077). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-077.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+    post:
+      tags:
+        - Pivots
+      summary: Creating a pivot table
+      operationId: creatingAPivotTable
+      x-status: pending
+      x-ticket: GC-077
+      description:
+        Planned (backlog GC-077). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-077.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/pivots/{pivotId}:
+    patch:
+      tags:
+        - Pivots
+      summary: Updating a pivot table
+      operationId: updatingAPivotTable
+      x-status: pending
+      x-ticket: GC-078
+      description:
+        Planned (backlog GC-078). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-078.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: pivotId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+    delete:
+      tags:
+        - Pivots
+      summary: Deleting a pivot table
+      operationId: deletingAPivotTable
+      x-status: pending
+      x-ticket: GC-078
+      description:
+        Planned (backlog GC-078). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-078.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: pivotId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/workbooks/{workbookId}/pivots/{pivotId}/refresh:
+    post:
+      tags:
+        - Pivots
+      summary: Refreshing a pivot table
+      operationId: refreshingAPivotTable
+      x-status: pending
+      x-ticket: GC-078
+      description:
+        Planned (backlog GC-078). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-078.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: pivotId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/charts:
+    get:
+      tags:
+        - Charts
+      summary: Listing charts
+      operationId: listingCharts
+      x-status: pending
+      x-ticket: GC-080
+      description:
+        Planned (backlog GC-080). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-080.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+    post:
+      tags:
+        - Charts
+      summary: Creating a chart
+      operationId: creatingAChart
+      x-status: pending
+      x-ticket: GC-080
+      description:
+        Planned (backlog GC-080). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-080.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/charts/{chartId}:
+    patch:
+      tags:
+        - Charts
+      summary: Updating a chart
+      operationId: updatingAChart
+      x-status: pending
+      x-ticket: GC-081
+      description:
+        Planned (backlog GC-081). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-081.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: chartId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+    delete:
+      tags:
+        - Charts
+      summary: Deleting a chart
+      operationId: deletingAChart
+      x-status: pending
+      x-ticket: GC-081
+      description:
+        Planned (backlog GC-081). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-081.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: chartId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/imports:
+    post:
+      tags:
+        - Import and export
+      summary: Importing CSV / XLSX-lite files
+      operationId: importingCsvXlsxLiteFiles
+      x-status: pending
+      x-ticket: GC-083
+      description:
+        Planned (backlog GC-083). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-083.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/imports/{importId}:
+    get:
+      tags:
+        - Import and export
+      summary: Import job status
+      operationId: importJobStatus
+      x-status: pending
+      x-ticket: GC-087
+      description:
+        Planned (backlog GC-087). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-087.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+  /api/v1/workbooks/{workbookId}/export:
+    get:
+      tags:
+        - Import and export
+      summary: Exporting a workbook
+      operationId: exportingAWorkbook
+      x-status: pending
+      x-ticket: GC-084
+      description:
+        Planned (backlog GC-084). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-084.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+  /api/v1/workbooks/{workbookId}/live:
+    get:
+      tags:
+        - Collaboration
+      summary: Real-time collaboration channel
+      operationId: realTimeCollaborationChannel
+      x-status: pending
+      x-ticket: GC-088
+      description:
+        Planned (backlog GC-088). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-088.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+  /api/v1/workbooks/{workbookId}/presence:
+    get:
+      tags:
+        - Collaboration
+      summary: Presence
+      operationId: presence
+      x-status: pending
+      x-ticket: GC-091
+      description:
+        Planned (backlog GC-091). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-091.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+  /api/v1/workbooks/{workbookId}/comments:
+    get:
+      tags:
+        - Comments
+      summary: Listing comments
+      operationId: listingComments
+      x-status: pending
+      x-ticket: GC-046
+      description:
+        Planned (backlog GC-046). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-046.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+    post:
+      tags:
+        - Comments
+      summary: Adding a comment
+      operationId: addingAComment
+      x-status: pending
+      x-ticket: GC-046
+      description:
+        Planned (backlog GC-046). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-046.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/comments/{commentId}:
+    patch:
+      tags:
+        - Comments
+      summary: Editing or resolving a comment
+      operationId: editingOrResolvingAComment
+      x-status: pending
+      x-ticket: GC-046
+      description:
+        Planned (backlog GC-046). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-046.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: commentId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+    delete:
+      tags:
+        - Comments
+      summary: Deleting a comment
+      operationId: deletingAComment
+      x-status: pending
+      x-ticket: GC-046
+      description:
+        Planned (backlog GC-046). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-046.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: commentId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/workbooks/{workbookId}/revisions:
+    get:
+      tags:
+        - Versions
+      summary: Revision timeline
+      operationId: revisionTimeline
+      x-status: pending
+      x-ticket: GC-094
+      description:
+        Planned (backlog GC-094). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-094.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+  /api/v1/workbooks/{workbookId}/versions:
+    get:
+      tags:
+        - Versions
+      summary: Listing named versions
+      operationId: listingNamedVersions
+      x-status: pending
+      x-ticket: GC-095
+      description:
+        Planned (backlog GC-095). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-095.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+    post:
+      tags:
+        - Versions
+      summary: Creating a named version
+      operationId: creatingANamedVersion
+      x-status: pending
+      x-ticket: GC-095
+      description:
+        Planned (backlog GC-095). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-095.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/versions/{versionId}/restore:
+    post:
+      tags:
+        - Versions
+      summary: Restoring a version
+      operationId: restoringAVersion
+      x-status: pending
+      x-ticket: GC-095
+      description:
+        Planned (backlog GC-095). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-095.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: versionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/collaborators:
+    get:
+      tags:
+        - Sharing
+      summary: Listing collaborators
+      operationId: listingCollaborators
+      x-status: pending
+      x-ticket: GC-098
+      description:
+        Planned (backlog GC-098). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-098.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+    post:
+      tags:
+        - Sharing
+      summary: Sharing a workbook
+      operationId: sharingAWorkbook
+      x-status: pending
+      x-ticket: GC-098
+      description:
+        Planned (backlog GC-098). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-098.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/collaborators/{userId}:
+    delete:
+      tags:
+        - Sharing
+      summary: Removing a collaborator
+      operationId: removingACollaborator
+      x-status: pending
+      x-ticket: GC-098
+      description:
+        Planned (backlog GC-098). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-098.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/workbooks/{workbookId}/share-links:
+    post:
+      tags:
+        - Sharing
+      summary: Creating a share link
+      operationId: creatingAShareLink
+      x-status: pending
+      x-ticket: GC-099
+      description:
+        Planned (backlog GC-099). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-099.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/workbooks/{workbookId}/share-links/{linkId}:
+    delete:
+      tags:
+        - Sharing
+      summary: Revoking a share link
+      operationId: revokingAShareLink
+      x-status: pending
+      x-ticket: GC-099
+      description:
+        Planned (backlog GC-099). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-099.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - name: linkId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/workbooks/{workbookId}/protected-ranges:
+    get:
+      tags:
+        - Sharing
+      summary: Listing protected ranges
+      operationId: listingProtectedRanges
+      x-status: pending
+      x-ticket: GC-100
+      description:
+        Planned (backlog GC-100). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-100.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+    post:
+      tags:
+        - Sharing
+      summary: Protecting a range
+      operationId: protectingARange
+      x-status: pending
+      x-ticket: GC-100
+      description:
+        Planned (backlog GC-100). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-100.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/WorkbookId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/members:
+    get:
+      tags:
+        - Administration
+      summary: Listing members
+      operationId: listingMembers
+      x-status: pending
+      x-ticket: GC-017
+      description:
+        Planned (backlog GC-017). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-017.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /api/v1/members/invitations:
+    post:
+      tags:
+        - Administration
+      summary: Inviting a member
+      operationId: invitingAMember
+      x-status: pending
+      x-ticket: GC-016
+      description:
+        Planned (backlog GC-016). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-016.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/members/{userId}:
+    patch:
+      tags:
+        - Administration
+      summary: Changing a member role
+      operationId: changingAMemberRole
+      x-status: pending
+      x-ticket: GC-017
+      description:
+        Planned (backlog GC-017). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-017.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+    delete:
+      tags:
+        - Administration
+      summary: Removing a member
+      operationId: removingAMember
+      x-status: pending
+      x-ticket: GC-017
+      description:
+        Planned (backlog GC-017). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-017.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/audit-events:
+    get:
+      tags:
+        - Administration
+      summary: Searching the audit log
+      operationId: searchingTheAuditLog
+      x-status: pending
+      x-ticket: GC-090
+      description:
+        Planned (backlog GC-090). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-090.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /api/v1/sessions:
+    get:
+      tags:
+        - Administration
+      summary: Listing active sessions
+      operationId: listingActiveSessions
+      x-status: pending
+      x-ticket: GC-019
+      description:
+        Planned (backlog GC-019). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-019.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /api/v1/sessions/{sessionId}:
+    delete:
+      tags:
+        - Administration
+      summary: Revoking a session
+      operationId: revokingASession
+      x-status: pending
+      x-ticket: GC-019
+      description:
+        Planned (backlog GC-019). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-019.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/CsrfToken'
+  /api/v1/auth/password-reset:
+    post:
+      tags:
+        - Auth
+      summary: Requesting a password reset
+      operationId: requestingAPasswordReset
+      x-status: pending
+      x-ticket: GC-018
+      description:
+        Planned (backlog GC-018). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-018.
+      security: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/auth/password-reset/confirm:
+    post:
+      tags:
+        - Auth
+      summary: Confirming a password reset
+      operationId: confirmingAPasswordReset
+      x-status: pending
+      x-ticket: GC-018
+      description:
+        Planned (backlog GC-018). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-018.
+      security: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/organizations/current:
+    get:
+      tags:
+        - Administration
+      summary: Organization settings
+      operationId: organizationSettings
+      x-status: pending
+      x-ticket: GC-014
+      description:
+        Planned (backlog GC-014). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-014.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+    patch:
+      tags:
+        - Administration
+      summary: Updating organization settings
+      operationId: updatingOrganizationSettings
+      x-status: pending
+      x-ticket: GC-014
+      description:
+        Planned (backlog GC-014). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-014.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Request shape defined when the ticket is implemented.
+  /api/v1/metrics:
+    get:
+      tags:
+        - Operations
+      summary: Metrics export
+      operationId: metricsExport
+      x-status: pending
+      x-ticket: GC-101
+      description:
+        Planned (backlog GC-101). The route is registered and answers 501 NOT_IMPLEMENTED with error.details.ticket
+        = GC-101.
+      security:
+        - sessionCookie: []
+      responses:
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: gc_session
+      description:
+        Opaque session token (HttpOnly, SameSite=Lax). Mutating requests also need the x-csrf-token header
+        equal to the session CSRF token (mirrored in the readable gc_csrf cookie) and an Origin matching APP_ORIGIN
+        when present.
+  parameters:
+    CsrfToken:
+      name: x-csrf-token
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Value of the gc_csrf cookie / Session.csrfToken
+    WorkbookId:
+      name: workbookId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SheetId:
+      name: sheetId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    ValidationFailed:
+      description: VALIDATION_FAILED with details[] of {path, message}
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthenticated:
+      description: UNAUTHENTICATED
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: FORBIDDEN or CSRF_TOKEN_INVALID
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: NOT_FOUND (also returned for resources of other organizations)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotImplemented:
+      description: Planned endpoint
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            data: null
+            error:
+              code: NOT_IMPLEMENTED
+              message: Inserting rows is planned but not implemented yet
+              details:
+                ticket: GC-060
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required:
+        - data
+        - error
+      properties:
+        data:
+          type: 'null'
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_FAILED
+                - REGISTRATION_REJECTED
+                - UNAUTHENTICATED
+                - CSRF_TOKEN_INVALID
+                - FORBIDDEN
+                - NOT_FOUND
+                - CONFLICT
+                - REVISION_CONFLICT
+                - PAYLOAD_TOO_LARGE
+                - RATE_LIMITED
+                - INTERNAL
+                - NOT_IMPLEMENTED
+            message:
+              type: string
+            details: {}
+    RegisterRequest:
+      type: object
+      required:
+        - organizationName
+        - displayName
+        - email
+        - password
+      properties:
+        organizationName:
+          type: string
+          minLength: 2
+          maxLength: 120
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          minLength: 12
+          maxLength: 200
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+          maxLength: 200
+    Session:
+      type: object
+      properties:
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            displayName:
+              type: string
+        organization:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+        role:
+          type: string
+          enum:
+            - owner
+            - admin
+            - editor
+            - viewer
+        permissions:
+          type: array
+          items:
+            type: string
+            enum:
+              - workbook:read
+              - workbook:create
+              - workbook:write
+              - workbook:delete
+              - workbook:share
+              - member:manage
+              - audit:read
+              - org:manage
+        csrfToken:
+          type: string
+    FunctionInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        category:
+          type: string
+          enum:
+            - math
+            - statistical
+            - logical
+            - text
+            - lookup
+            - info
+        signature:
+          type: string
+        description:
+          type: string
+        minArgs:
+          type: integer
+        maxArgs:
+          type: integer
+    ParseResult:
+      oneOf:
+        - type: object
+          properties:
+            valid:
+              const: true
+            normalized:
+              type: string
+            ast:
+              type: object
+              description: AST node (see packages/shared/src/formula/ast.ts)
+            references:
+              type: object
+              properties:
+                cells:
+                  type: array
+                  items:
+                    type: object
+                ranges:
+                  type: array
+                  items:
+                    type: object
+        - type: object
+          properties:
+            valid:
+              const: false
+            message:
+              type: string
+            position:
+              type: integer
+              description: 0-based offset in the formula text
+    Workbook:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        revision:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    Sheet:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        position:
+          type: integer
+        rowCount:
+          type: integer
+        colCount:
+          type: integer
+    WorkbookDetail:
+      allOf:
+        - $ref: '#/components/schemas/Workbook'
+        - type: object
+          properties:
+            sheets:
+              type: array
+              items:
+                $ref: '#/components/schemas/Sheet'
+    CellValue:
+      type: object
+      required:
+        - type
+        - value
+      properties:
+        type:
+          type: string
+          enum:
+            - empty
+            - number
+            - string
+            - boolean
+            - error
+        value:
+          oneOf:
+            - type: number
+            - type: string
+            - type: boolean
+            - type: 'null'
+          description: 'For errors the code, e.g. #DIV/0!, #CYCLE!'
+        message:
+          type: string
+    Cell:
+      type: object
+      properties:
+        sheetId:
+          type: string
+          format: uuid
+        row:
+          type: integer
+          minimum: 0
+        col:
+          type: integer
+          minimum: 0
+        raw:
+          type: string
+        value:
+          $ref: '#/components/schemas/CellValue'
+    CellEdit:
+      type: object
+      required:
+        - sheetId
+        - row
+        - col
+        - raw
+      properties:
+        sheetId:
+          type: string
+          format: uuid
+        row:
+          type: integer
+          minimum: 0
+          maximum: 1048575
+        col:
+          type: integer
+          minimum: 0
+          maximum: 16383
+        raw:
+          type: string
+          maxLength: 8192
+          description: What the user typed; "" clears the cell; leading = makes a formula
+    PatchCellsRequest:
+      type: object
+      required:
+        - baseRevision
+        - edits
+      properties:
+        baseRevision:
+          type: integer
+          minimum: 0
+        edits:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/CellEdit'
+    CommitResult:
+      type: object
+      properties:
+        revision:
+          type: integer
+        changed:
+          type: array
+          items:
+            $ref: '#/components/schemas/Cell'
+        evaluated:
+          type: integer
+          description: Formulas evaluated (dirty set size)
+        cycles:
+          type: integer
+          description: Evaluated cells that are members of a reference cycle
