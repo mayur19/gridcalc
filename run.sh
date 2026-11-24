@@ -55,7 +55,7 @@ ensure_env() {
     tmp="$(mktemp)"
     sed "s/${SECRET_PLACEHOLDER}/$(random_secret)/" "${ENV_FILE}" > "${tmp}" && mv "${tmp}" "${ENV_FILE}"
     chmod 600 "${ENV_FILE}"
-    ok "Generated a random SESSION_SECRET"
+    ok "Created a random SESSION_SECRET"
   fi
   set -a
   # shellcheck disable=SC1090
