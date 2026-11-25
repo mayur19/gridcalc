@@ -3,7 +3,7 @@
 | Field          | Value                                                                                                                                                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Product        | gridcalc, a collaborative spreadsheet engine in the browser                                                                                                                                                              |
-| Document owner | Product and engineering (gridcalc contributors)                                                                                                                                                                                   |
+| Document owner | Product and engineering (gridcalc contributors)                                                                                                                                                                          |
 | Status         | Living document; reflects the code at milestone M1                                                                                                                                                                       |
 | Related        | [requirements.md](requirements.md), [user-stories.md](user-stories.md), [requirements-traceability.md](requirements-traceability.md), [../glossary.md](../glossary.md), [../planning/backlog.md](../planning/backlog.md) |
 
